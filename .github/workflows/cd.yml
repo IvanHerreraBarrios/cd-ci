@@ -1,0 +1,90 @@
+name: CI/CD ECS Controller
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: ecs-controller
+  ECS_CLUSTER: ecs-controller-cluster
+  ECS_SERVICE: ecs-controller-service
+  CONTAINER_NAME: ecs-controller
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # 1. Pruebas unitarias/integración
+      # Usamos `mvn test` directo para evitar problemas de ejecución/CRLF con `./mvnw` en Windows
+      - name: Run tests
+        working-directory: ecs-controller
+        run: mvn test
+
+      # 2. Configuración de credenciales AWS
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 3. Autenticación en Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4. Generación de Tag único basado en el commit de GitHub
+      - name: Set image tag
+        id: image
+        shell: bash
+        run: |
+          echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      # 5. Construcción de la imagen Docker desde la subcarpeta ecs-controller
+      - name: Build Docker image
+        working-directory: ecs-controller
+        run: |
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }} \
+            .
+
+      # 6. Subida de la imagen a Amazon ECR
+      - name: Push Docker image
+        run: |
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }}
+
+      # 7. Inyección de la nueva imagen en la definición de la tarea
+      # Nota la ruta corregida apuntando a Infra/ecs-controller/
+      - name: Render ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: Infra/ecs-controller/task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }}
+
+      # 8. Despliegue en el servicio de ECS
+      - name: Deploy ECS service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

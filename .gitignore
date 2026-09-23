@@ -1,0 +1,54 @@
+# =========================
+# AWS credentials
+# =========================
+.aws/
+credentials
+credentials.*
+*.pem
+
+# =========================
+# Terraform
+# =========================
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Terraform variables
+*.tfvars
+*.tfvars.json
+
+# Terraform plans
+*.tfplan
+plan.out
+
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =========================
+# Java / Maven
+# =========================
+**/target/
+*.class
+
+# =========================
+# IDE
+# =========================
+.idea/
+.vscode/
+*.iml
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
