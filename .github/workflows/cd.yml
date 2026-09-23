@@ -15,11 +15,15 @@ env:
   CONTAINER_NAME: ecs-controller
 
 jobs:
-  build-test-deploy:
+  # ==========================================
+  # 1. ETAPA DE TEST
+  # ==========================================
+  test:
+    name: Test Application
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -29,17 +33,33 @@ jobs:
           java-version: "21"
           cache: maven
 
-      # 1. Ejecuta únicamente las pruebas
-      - name: Run tests
+      - name: Run unit & integration tests
         working-directory: ecs-controller
         run: mvn test
 
-      # 2. Genera el .jar dentro de target/ para que Docker lo pueda copiar
+  # ==========================================
+  # 2. ETAPA DE BUILD (Docker & ECR)
+  # ==========================================
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: test # Solo se ejecuta si los tests pasan
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
       - name: Build JAR package
         working-directory: ecs-controller
         run: mvn package -DskipTests
 
-      # 3. Configuración de credenciales AWS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -48,19 +68,16 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 4. Autenticación en Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 5. Generación de Tag único basado en el commit de GitHub
       - name: Set image tag
         id: image
         shell: bash
         run: |
           echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      # 6. Construcción de la imagen Docker
       - name: Build Docker image
         working-directory: ecs-controller
         run: |
@@ -68,13 +85,41 @@ jobs:
             -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }} \
             .
 
-      # 7. Subida de la imagen a Amazon ECR
       - name: Push Docker image
         run: |
           docker push \
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }}
 
-      # 8. Inyección de la nueva imagen en la definición de la tarea
+  # ==========================================
+  # 3. ETAPA DE DEPLOY (AWS ECS)
+  # ==========================================
+  deploy:
+    name: Deploy to Amazon ECS
+    runs-on: ubuntu-latest
+    needs: build # Solo se ejecuta si la imagen se construyó y subió con éxito
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: image
+        shell: bash
+        run: |
+          echo "tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Render ECS task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -83,7 +128,6 @@ jobs:
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image.outputs.tag }}
 
-      # 9. Despliegue en el servicio de ECS
       - name: Deploy ECS service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
